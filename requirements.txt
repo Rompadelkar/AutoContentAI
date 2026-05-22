@@ -1,9 +1,0 @@
-fastapi
-uvicorn
-yt-dlp
-openai-whisper
-torch
-ffmpeg-python
-python-multipart
-moviepy
-requests
