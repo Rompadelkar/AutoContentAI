@@ -1,7 +1,166 @@
-import requests
+import os
 import json
 
-OLLAMA_URL = "http://localhost:11434/api/generate"
+from groq import Groq
+from dotenv import load_dotenv
+
+from services.content_classifier import (
+    detect_content_type
+)
+
+from services.psychology_engine import (
+    detect_emotion,
+    psychology_score
+)
+
+from services.recommendation_engine import (
+    generate_recommendations
+)
+
+load_dotenv()
+
+client = Groq(
+    api_key=os.getenv(
+        "GROQ_API_KEY"
+    )
+)
+
+
+def create_story_windows(
+    transcript_segments,
+    window_size=25,
+    step=10
+):
+
+    windows = []
+
+    if not transcript_segments:
+        return windows
+
+    video_end = transcript_segments[-1]["end"]
+
+    current_start = 0
+
+    while current_start < video_end:
+
+        current_end = (
+            current_start
+            + window_size
+        )
+
+        text_parts = []
+
+        for segment in transcript_segments:
+
+            if (
+                segment["start"] >= current_start
+                and
+                segment["end"] <= current_end
+            ):
+
+                text_parts.append(
+                    segment["text"]
+                )
+
+        combined_text = " ".join(
+            text_parts
+        )
+
+        if len(
+            combined_text.strip()
+        ) > 80:
+
+            windows.append({
+
+                "start":
+                current_start,
+
+                "end":
+                current_end,
+
+                "text":
+                combined_text
+            })
+
+        current_start += step
+
+    return windows
+
+
+def build_category_prompt(
+    content_type
+):
+
+    if content_type == "movie":
+
+        return """
+Focus on:
+
+- betrayal
+- revenge
+- conflict
+- twists
+- emotional scenes
+- shocking moments
+- breakups
+- confessions
+"""
+
+    elif content_type == "podcast":
+
+        return """
+Focus on:
+
+- life lessons
+- business advice
+- money
+- mindset
+- controversial opinions
+- personal stories
+"""
+
+    elif content_type == "interview":
+
+        return """
+Focus on:
+
+- surprising answers
+- failures
+- success stories
+- emotional moments
+"""
+
+    elif content_type == "news":
+
+        return """
+Focus on:
+
+- urgency
+- controversy
+- fear
+- impact
+- breaking developments
+"""
+
+    elif content_type == "vlog":
+
+        return """
+Focus on:
+
+- relatable moments
+- humor
+- transformation
+- emotional moments
+"""
+
+    return """
+Focus on:
+
+- emotional impact
+- curiosity
+- storytelling
+- retention
+"""
 
 
 def analyze_transcript(
@@ -9,102 +168,275 @@ def analyze_transcript(
     number_of_clips
 ):
 
-    clips = []
+    if not transcript_segments:
 
-    for segment in transcript_segments:
+        return []
 
-        text = segment["text"]
+    transcript_text = " ".join(
 
-        prompt = f"""
-You are a viral content expert.
+        segment["text"]
 
-Rate this transcript segment from 1-10 for viral potential.
+        for segment in transcript_segments
+    )
 
-Consider:
+    content_type = (
+        detect_content_type(
+            transcript_text
+        )
+    )
+
+    windows = create_story_windows(
+        transcript_segments,
+        window_size=25,
+        step=10
+    )
+
+    if not windows:
+
+        return []
+
+    windows_payload = []
+
+    for index, window in enumerate(
+        windows
+    ):
+
+        windows_payload.append({
+
+            "id":
+            index,
+
+            "start":
+            window["start"],
+
+            "end":
+            window["end"],
+
+            "text":
+            window["text"][:1000]
+        })
+
+    category_rules = (
+        build_category_prompt(
+            content_type
+        )
+    )
+
+    prompt = f"""
+You are an elite short-form content strategist.
+
+Content Type:
+{content_type}
+
+{category_rules}
+
+Analyze all windows.
+
+Find the MOST viral moments.
+
+Score each moment from 1-100.
+
+Prioritize:
+- strong hooks
 - emotional impact
 - curiosity
-- controversy
 - storytelling
-- motivation
-- audience retention
-- hooks
-- suspense
-- shocking statements
+- conflict
+- surprise
+- retention
 
-Return ONLY JSON:
+Return ONLY valid JSON.
 
-{{
-    "score": 1,
-    "viral_title": "short hook title",
-    "reason": "why this may go viral"
-}}
+Example:
 
-Transcript:
-{text}
+[
+ {{
+   "id":0,
+   "viral_score":95,
+   "viral_title":"Title",
+   "reason":"Why it may go viral"
+ }}
+]
+
+Windows:
+
+{json.dumps(windows_payload)}
 """
 
-        payload = {
-            "model": "qwen2.5:3b",
-            "prompt": prompt,
-            "stream": False
-        }
+    try:
 
-        try:
+        response = (
+            client.chat.completions.create(
 
-            response = requests.post(
-                OLLAMA_URL,
-                json=payload
+                model=
+                "llama-3.3-70b-versatile",
+
+                messages=[
+                    {
+                        "role":
+                        "user",
+
+                        "content":
+                        prompt
+                    }
+                ],
+
+                temperature=0.3
             )
+        )
 
-            result = response.json()
+        raw = (
+            response
+            .choices[0]
+            .message
+            .content
+            .strip()
+        )
 
-            ai_response = result["response"]
+        raw = (
+            raw
+            .replace(
+                "```json",
+                ""
+            )
+            .replace(
+                "```",
+                ""
+            )
+            .strip()
+        )
 
-            json_start = ai_response.find("{")
-            json_end = ai_response.rfind("}") + 1
+        parsed = json.loads(
+            raw
+        )
 
-            clean_json = ai_response[
-                json_start:json_end
+        clips = []
+
+        for item in parsed:
+
+            if item["id"] >= len(windows):
+                continue
+
+            window = windows[
+                item["id"]
             ]
 
-            parsed = json.loads(clean_json)
+            emotion = (
+                detect_emotion(
+                    window["text"]
+                )
+            )
+
+            psychology = (
+                psychology_score(
+                    window["text"]
+                )
+            )
+
+            ai_score = (
+                item.get(
+                    "viral_score",
+                    50
+                )
+            )
+
+            final_score = (
+
+                ai_score * 0.8
+
+                +
+
+                psychology * 0.2
+            )
+
+            recommendations = (
+                generate_recommendations(
+
+                    emotion,
+
+                    content_type,
+
+                    final_score
+                )
+            )
 
             clips.append({
 
-                "score": parsed.get(
-                    "score",
-                    1
-                ),
+                "viral_score":
+                final_score,
 
-                "viral_title": parsed.get(
+                "viral_title":
+                item.get(
                     "viral_title",
                     "Viral Clip"
                 ),
 
-                "reason_may_go_viral": parsed.get(
+                "reason_may_go_viral":
+                item.get(
                     "reason",
-                    "Potentially engaging"
+                    ""
                 ),
 
-                "start": segment["start"],
+                "emotion":
+                emotion,
 
-                "end": segment["end"],
+                "content_type":
+                content_type,
 
-                "text": text
+                "audio_style":
+                recommendations[
+                    "audio_style"
+                ],
+
+                "caption_idea":
+                recommendations[
+                    "caption_idea"
+                ],
+
+                "hook_type":
+                recommendations[
+                    "hook_type"
+                ],
+
+                "recommended_platform":
+                recommendations[
+                    "recommended_platform"
+                ],
+
+                "best_posting_time":
+                recommendations[
+                    "best_posting_time"
+                ],
+
+                "start":
+                window["start"],
+
+                "end":
+                window["end"],
+
+                "text":
+                window["text"]
             })
 
-        except Exception as e:
+        clips = sorted(
 
-            print(
-                "AI Segment Error:",
-                e
-            )
+            clips,
 
-    # SORT BY SCORE
-    clips = sorted(
-        clips,
-        key=lambda x: x["score"],
-        reverse=True
-    )
+            key=lambda x:
+            x["viral_score"],
 
-    return clips[:number_of_clips]
+            reverse=True
+        )
+
+        return clips[
+            :number_of_clips
+        ]
+
+    except Exception as e:
+
+        print(
+            "Groq Viral Detector Error:",
+            e
+        )
+
+        return []

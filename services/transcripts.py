@@ -1,43 +1,106 @@
-import whisper
 import os
+from groq import Groq
+from dotenv import load_dotenv
+
+load_dotenv()
 
 TRANSCRIPT_DIR = "transcripts"
 
-model = whisper.load_model("base")
+client = Groq(
+    api_key=os.getenv("GROQ_API_KEY")
+)
 
 
-
-def transcribe_video(video_path: str):
+def transcribe_video(video_path):
 
     try:
 
-        os.makedirs(TRANSCRIPT_DIR, exist_ok=True)
-
-        result = model.transcribe(
-            video_path,
-            word_timestamps=True
+        os.makedirs(
+            TRANSCRIPT_DIR,
+            exist_ok=True
         )
 
-        transcript_text = result["text"]
+        with open(
+            video_path,
+            "rb"
+        ) as audio_file:
 
-        filename = os.path.basename(video_path)
+            transcription = (
+                client.audio.transcriptions.create(
+                    file=audio_file,
+                    model="whisper-large-v3-turbo",
+                    response_format="verbose_json"
+                )
+            )
+
+        print("\n========== GROQ RESPONSE ==========")
+        print(type(transcription))
+        print(transcription)
+        print("===================================\n")
+
+        transcript_text = ""
+
+        segments = []
+
+        if hasattr(
+            transcription,
+            "segments"
+        ):
+
+            for segment in transcription.segments:
+
+                transcript_text += (
+                    segment["text"] + " "
+                )
+
+                segments.append({
+
+                    "start":
+                    segment["start"],
+
+                    "end":
+                    segment["end"],
+
+                    "text":
+                    segment["text"]
+                })
+
+        filename = os.path.basename(
+            video_path
+        )
 
         transcript_file = os.path.join(
             TRANSCRIPT_DIR,
             f"{filename}.txt"
         )
 
-        with open(transcript_file, "w", encoding="utf-8") as f:
-            f.write(transcript_text)
+        with open(
+            transcript_file,
+            "w",
+            encoding="utf-8"
+        ) as f:
+
+            f.write(
+                transcript_text
+            )
 
         return {
-            "transcript": transcript_text,
-            "segments": result["segments"],
-            "transcript_file": transcript_file
+
+            "transcript":
+            transcript_text,
+
+            "segments":
+            segments,
+
+            "transcript_file":
+            transcript_file
         }
 
     except Exception as e:
 
-        print("Transcription Error:", e)
+        print(
+            "Groq Transcription Error:",
+            e
+        )
 
         return None
